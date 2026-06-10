@@ -1,0 +1,5 @@
+presidio-anonymizer>=3.0.0
+fitz>=4.2.0
+google-generativeai>=0.23.0
+PyMuPDF>=2.4.0  # Required for PDF text extraction
+requests>=2.31.0
