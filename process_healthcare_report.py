@@ -115,7 +115,7 @@ TEXT:
 
 
 # ✅ MAIN PIPELINE
-def main():
+def main(pdf_path=None):
 
     print("🔧 Starting pipeline...")
 
@@ -124,7 +124,9 @@ def main():
     masker = PresidioMasker(output_dir=OUTPUT_DIR)
 
     # ✅ Extract + Mask
-    raw_text = masker.extract_text_from_pdf(PDF_PATH)
+    path = pdf_path if pdf_path else PDF_PATH
+    raw_text = masker.extract_text_from_pdf(path)
+
     masked_text, pii_map = masker.mask_pii(raw_text)
 
     # ✅ Save masked text
@@ -152,10 +154,12 @@ def main():
         patient_id = extract_patient_id(body)
         dob = extract_dob(body)
 
-        summary = summarize_full_patient(body)
+        summary = summarize_chunk(body)
 
-        if not summary:
-            summary = "No summary generated."
+        
+    if not summary:
+        summary = "⚠️ Skipped due to API quota limit"
+
 
         # ✅ Inject BOTH manually
         if dob:
