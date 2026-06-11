@@ -2,20 +2,9 @@ import os
 import json
 import re
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
 from config import *
 from anonymize_pdf.mask_pii import PresidioMasker
-from gemini_integration import summarize_chunk, call_gemini
-
-
-# ✅ Chunking (CORRECT PLACE)
-def chunk_text(text):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
-    )
-    return splitter.split_text(text)
+from gemini_integration import summarize_chunk
 
 
 # ✅ Extract patient ID BEFORE LLM
@@ -23,31 +12,23 @@ def extract_patient_id(text):
     match = re.search(r"PERSON_\d+", text)
     return match.group() if match else "UNKNOWN"
 
+
 def extract_dob(text):
-    import re
     match = re.search(r"DATE_TIME_\d+", text)
     return match.group() if match else None
 
+
 def remove_extra_dob(text):
-    import re
-
-    # ✅ Remove standalone "DOB" lines (no value)
-    text = re.sub(r"\nDOB\s*\n", "\n", text)
-
-    # ✅ Remove stray "DOB" without colon/value
+    # ✅ Remove stray "DOB" without proper value
     text = re.sub(r"\bDOB\b(?!\s*:)", "", text)
-
     return text
 
 
-# ✅ Split patients properly
+# ✅ Split patients properly (CORE LOGIC)
 def split_by_patient(text):
-    import re
 
-    # ✅ ONLY split when Name appears (true patient start)
-    pattern = r"Patient Demographics\s*\n+Name:\s*PERSON_\d+"
-
-    matches = list(re.finditer(pattern, text))
+    pattern = r"Patient Demographics\s*.*?Name:\s*PERSON_\d+"
+    matches = list(re.finditer(pattern, text, re.DOTALL))
 
     sections = []
 
@@ -60,58 +41,15 @@ def split_by_patient(text):
             end = len(text)
 
         chunk = text[start:end].strip()
-
         sections.append((f"Patient {len(sections)+1}", chunk))
 
     return sections
 
 
-# ✅ Fix broken names like:
-# Kimberly\nLawrence → Kimberly Lawrence
+# ✅ Fix broken names (after unmasking)
 def clean_unmasked(text):
-    text = re.sub(
-        r"(?<=Patient:\s)([A-Za-z]+)\n([A-Za-z]+)",
-        r"\1 \2",
-        text
-    )
+    text = re.sub(r"([A-Za-z])\n([A-Za-z])", r"\1 \2", text)
     return text
-
-
-# ✅ FULL PATIENT SUMMARIZATION (chunk + merge)
-def summarize_full_patient(text):
-
-    chunks = chunk_text(text)
-
-    partial_summaries = []
-
-    for chunk in chunks:
-        summary = summarize_chunk(chunk)
-        if summary:
-            partial_summaries.append(summary)
-
-    combined = "\n".join(partial_summaries)
-
-    # ✅ FINAL MERGE PROMPT (removes repetition)
-    final_prompt = f"""
-Merge the following summaries into ONE clean summary.
-
-STRICT RULES:
-- Remove duplicate points
-- Keep concise
-- Maintain structure
-- Do NOT repeat same idea
-
-Format:
-Diagnosis:
-Key Findings:
-Treatment:
-Outcome:
-
-TEXT:
-{combined}
-"""
-
-    return call_gemini(final_prompt)
 
 
 # ✅ MAIN PIPELINE
@@ -137,11 +75,11 @@ def main(pdf_path=None):
     with open(PII_MAP_PATH, "w", encoding="utf-8") as f:
         json.dump(pii_map, f, indent=2)
 
-    # ✅ Split patients
+    # ✅ Split patients (ONLY segmentation used)
     patient_sections = split_by_patient(masked_text)
     print(f"✅ Patients found: {len(patient_sections)}")
 
-    # ✅ Clear outputs
+    # ✅ Clear old outputs
     open(SUMMARY_MASKED_PATH, "w").close()
     open(SUMMARY_UNMASKED_PATH, "w").close()
 
@@ -154,14 +92,14 @@ def main(pdf_path=None):
         patient_id = extract_patient_id(body)
         dob = extract_dob(body)
 
+        # ✅ ONE CALL PER PATIENT (no chunking)
         summary = summarize_chunk(body)
 
-        
-    if not summary:
-        summary = "⚠️ Skipped due to API quota limit"
+        # ✅ Handle quota / failure
+        if not summary:
+            summary = "⚠️ Skipped due to API quota limit"
 
-
-        # ✅ Inject BOTH manually
+        # ✅ Inject metadata
         if dob:
             summary = f"Patient: {patient_id}\nDOB: {dob}\n{summary}"
         else:
@@ -177,7 +115,7 @@ def main(pdf_path=None):
 
         unmasked_output = f"{header}\n{unmasked_summary}\n{'-'*40}\n"
 
-        # ✅ Save files
+        # ✅ Save outputs
         with open(SUMMARY_MASKED_PATH, "a", encoding="utf-8") as f:
             f.write(masked_output)
 
